@@ -66,12 +66,14 @@ if __name__ == '__main__':
     model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
     newModel = torch.nn.Sequential(*list(model.children())[:-5])
 
-    print(newModel)
-
     image = Image.open('Bear1.jpg')
-    img_tensor = transforms.ToTensor(image)
+    converter_tensor = transforms.ToTensor()
+    img_tensor = converter_tensor(image)
+    img_tensor = img_tensor.unsqueeze(0)
+    print(img_tensor.shape)
     out = newModel(img_tensor)
 
+    print(out.shape)
     cp.send_data(out)
     cp.handle_data()
 

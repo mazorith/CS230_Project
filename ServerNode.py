@@ -71,10 +71,17 @@ if __name__ == '__main__':
 
     model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
     newModel = torch.nn.Sequential(*list(model.children())[5:])
+    newModel = torch.nn.Sequential(*list(newModel.children())[:4])
+    last_layer = torch.nn.Sequential(*list(model.children())[9:])
 
     sp.handle_data()
 
+    print('Handled Data')
+    print(sp.data.shape)
     out = newModel(sp.data)
-    
+    out = torch.flatten(out, 1)
+    out = last_layer(out)
+    print('success, sending back output')
+
     sp.send_data(out)
     sp.close()
