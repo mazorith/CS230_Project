@@ -58,10 +58,17 @@ class ClientProtocol:
 
 if __name__ == '__main__':
 
-    cp = ClientProtocol()
+    cp1 = ClientProtocol()
+    #cp2 = ClientProtocol()
+    #cp3 = ClientProtocol()
 
-    cp.connect('127.0.0.1', 55555)
-    cp.client_handshake()
+    cp1.connect('127.0.0.1', 55555)
+    #cp2.connect('127.0.0.1', 55556)
+    #cp3.connect('127.0.0.1', 55557)
+    
+    cp1.client_handshake()
+    #cp2.client_handshake()
+    #cp3.client_handshake()
 
     model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
     newModel = torch.nn.Sequential(*list(model.children())[:-5])
