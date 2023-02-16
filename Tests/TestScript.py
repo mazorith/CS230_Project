@@ -10,7 +10,7 @@ def total_size(shape):
 
 model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
 
-image = Image.open('Bear1.jpg')
+image = Image.open('..\\Bear1.jpg')
 converter_tensor = transforms.ToTensor()
 img_tensor = converter_tensor(image)
 img_tensor = img_tensor.unsqueeze(0)
@@ -18,8 +18,9 @@ print(img_tensor.shape)
 out = model(img_tensor)
 
 out1 = model.conv1(img_tensor)
-layer_size = total_size(out1.shape)
+layer_size = total_size(out1.shape) #First Split here
 print(out1.shape, layer_size)
+print('--------1--------')
 
 out2 = model.bn1(out1)
 layer_size = total_size(out2.shape)
@@ -30,8 +31,9 @@ layer_size = total_size(out3.shape)
 print(out3.shape, layer_size)
 
 out4 = model.maxpool(out3)
-layer_size = total_size(out4.shape)
+layer_size = total_size(out4.shape) #Second split here
 print(out4.shape, layer_size)
+print('--------2--------')
 
 out5 = model.layer1(out4)
 layer_size = total_size(out5.shape)
@@ -42,8 +44,9 @@ layer_size = total_size(out6.shape)
 print(out6.shape, layer_size)
 
 out7 = model.layer3(out6)
-layer_size = total_size(out7.shape)
+layer_size = total_size(out7.shape) #Third split here
 print(out7.shape, layer_size)
+print('--------3--------')
 
 out8 = model.layer4(out7)
 layer_size = total_size(out8.shape)
@@ -55,5 +58,6 @@ print(out9.shape, layer_size)
 
 out9 = torch.flatten(out9, 1)
 out10 = model.fc(out9)
-layer_size = total_size(out10.shape)
+layer_size = total_size(out10.shape) #Finalized Return Data
 print(out10.shape, layer_size)
+print('-----return----')
