@@ -12,13 +12,15 @@ class Encoder(nn.Module):
         self.encoder_output_layer = nn.Linear(in_features=kwargs["layer2_shape"], out_features=kwargs["output_shape"])
 
     def forward(self, features):
+        shape = features.shape
+        features = features.view(-1, shape[1])
         activation = self.encoder_hidden_layer1(features)
         activation = torch.relu(activation)
         activation = self.encoder_hidden_layer2(activation)
         activation = torch.relu(activation)
         code = self.encoder_output_layer(activation)
         code = torch.relu(code)
-        return code
+        return code, shape
 
 class Decoder(nn.Module):
     def __init__(self, **kwargs):
@@ -27,13 +29,14 @@ class Decoder(nn.Module):
         self.decoder_hidden_layer2 = nn.Linear(in_features=kwargs["layer1_shape"], out_features=kwargs["layer2_shape"])
         self.decoder_output_layer = nn.Linear(in_features=kwargs["layer2_shape"], out_features=kwargs["output_shape"])
 
-    def forward(self, features):
+    def forward(self, features, shape):
         activation = self.decoder_hidden_layer1(features)
         activation = torch.relu(activation)
         activation = self.decoder_hidden_layer2(activation)
         activation = torch.relu(activation)
         activation = self.decoder_output_layer(activation)
         reconstructed = torch.relu(activation)
+        reconstructed = reconstructed.view(shape[0], shape[1], shape[2], shape[3])
         return reconstructed
 
 
@@ -48,7 +51,7 @@ def total_size(shape):
 if __name__ == '__main__':
     model1 = Encoder(input_shape=1024, layer1_shape=512, layer2_shape=128, output_shape=64)
     model2 = Decoder(input_shape=64, layer1_shape=128, layer2_shape=512, output_shape=1024)
-    optimizer = torch.optim.Adam(list(model1.parameters()) + list(model2.parameters()), lr=1e-3)
+    optimizer = torch.optim.Adam(list(model1.parameters()) + list(model2.parameters()), lr=1e-3) #lr=1e-2 for conv1
     criterion = nn.MSELoss()
 
     layer = 'layer3'
@@ -71,15 +74,13 @@ if __name__ == '__main__':
 
                 data = torch.load(output_folder_dir + '\\' + data_name)
                 og_shape = data.shape
-                data = data.view(-1, 1024)
-                
             
                 optimizer.zero_grad()
-                output = model1(data)
+                output, preserved_shape = model1(data)
 
                 new_shape = output.shape
 
-                output = model2(output)
+                output = model2(output, preserved_shape)
 
                 train_loss = criterion(output, data)
                 train_loss.backward()

@@ -7,83 +7,93 @@ import pickle
 
 class ClientProtocol:
 
-    def __init__(self):
-        self.socket = None
-        self.data = None
+    def __init__(self, number_of_sockets):
+        self.sockets = []
+        self.sockets_data = []
 
-    def connect(self, server_ip, server_port):
-        self.socket = socket(AF_INET, SOCK_STREAM)
-        self.socket.connect((server_ip, server_port))
+        for i in range(number_of_sockets):
+            self.sockets.append(None)
+            self.sockets_data.append(None)
 
-    def close(self):
-        self.socket.shutdown(SHUT_WR)
-        self.socket.close()
-        self.socket = None
+    def connect(self, server_ip, server_port, socket_number = 0):
+        self.sockets[socket_number] = socket(AF_INET, SOCK_STREAM)
+        self.sockets[socket_number].connect((server_ip, server_port))
 
-    def send_data(self, data):
+    def close(self, socket_number = -1):
+        if socket_number == -1:
+            for socket in self.sockets:
+                socket.shutdown(SHUT_WR)
+                socket.close()
+                socket = None
+        else:
+            self.sockets[socket_number].shutdown(SHUT_WR)
+            self.sockets[socket_number].close()
+            self.sockets[socket_number] = None
+        
+
+    def send_data(self, data, socket_number):
         data = pickle.dumps(data)
         length = pack('>Q', len(data))
 
-        self.socket.sendall(length)
-        self.socket.sendall(data)
+        self.sockets[socket_number].sendall(length)
+        self.sockets[socket_number].sendall(data)
 
-        ack = self.socket.recv(1)
+        ack = self.sockets[socket_number].recv(1)
         #print(ack)
 
-    def client_handshake(self):
+    def client_handshake(self, socket_number):
         print('Sending handshake to server')
-        self.socket.sendall(b'\00')
-        ack = self.socket.recv(1)
+        self.sockets[socket_number].sendall(b'\00')
+        ack = self.sockets[socket_number].recv(1)
         if(ack == b'\00'):
             print('Successfully recived server Handshake')
         else:
             print('Message recived not server ack')
 
-    def handle_data(self):
+    def handle_data(self, socket_number):
         collected_message = False
         while not collected_message:
-            bs = self.socket.recv(8)
+            bs = self.sockets[socket_number].recv(8)
             (length,) = unpack('>Q', bs)
             data = b''
             while len(data) < length:
                 to_read = length - len(data)
-                data += self.socket.recv(
+                data += self.sockets[socket_number].recv(
                     4096 if to_read > 4096 else to_read)
 
             # send our 0 ack
             assert len(b'\00') == 1
             collected_message = True
-            self.socket.sendall(b'\00')
-            self.data = pickle.loads(data)
+            self.sockets[socket_number].sendall(b'\00')
+            self.sockets_data[socket_number] = pickle.loads(data)
 
+#main functionality for testing/debugging
 if __name__ == '__main__':
 
-    cp1 = ClientProtocol()
-    #cp2 = ClientProtocol()
-    #cp3 = ClientProtocol()
+    cp = ClientProtocol()
 
-    cp1.connect('127.0.0.1', 55555)
-    #cp2.connect('127.0.0.1', 55556)
-    #cp3.connect('127.0.0.1', 55557)
+    cp.connect('127.0.0.1', 55555,0)
+    cp.connect('127.0.0.1', 55556,1)
+    cp.connect('127.0.0.1', 55557,2)
     
-    cp1.client_handshake()
-    #cp2.client_handshake()
-    #cp3.client_handshake()
+    cp.client_handshake(0)
+    cp.client_handshake(1)
+    cp.client_handshake(2)
 
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
-    newModel = torch.nn.Sequential(*list(model.children())[:-5])
+    # model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
+    # newModel = torch.nn.Sequential(*list(model.children())[:-5])
 
-    image = Image.open('Bear1.jpg')
-    converter_tensor = transforms.ToTensor()
-    img_tensor = converter_tensor(image)
-    img_tensor = img_tensor.unsqueeze(0)
-    print(img_tensor.shape)
-    out = newModel(img_tensor)
+    # image = Image.open('Bear1.jpg')
+    # converter_tensor = transforms.ToTensor()
+    # img_tensor = converter_tensor(image)
+    # img_tensor = img_tensor.unsqueeze(0)
+    # print(img_tensor.shape)
+    # out = newModel(img_tensor)
 
-    print(out.shape)
-    cp.send_data(out)
-    cp.handle_data()
+    # print(out.shape)
+    # cp.send_data(out)
+    # cp.handle_data()
 
-    print(cp.data[0])
+    # print(cp.data[0])
 
-    cp.close()
+    # cp.close()
