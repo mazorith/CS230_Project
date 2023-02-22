@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torchvision
@@ -87,7 +88,12 @@ class Resnet50_4(nn.Module):
         output = self.fc(output)
         return output
 
+#Finetuning of custom models
 if __name__ == '__main__':
+    orignal_model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
+    for param in orignal_model.parameters():
+        param.requires_grad = False
+
     res1 = Resnet50_1()
     res2 = Resnet50_2()
     res3 = Resnet50_3()
@@ -113,29 +119,43 @@ if __name__ == '__main__':
                                 list(res3.parameters()) + list(res3.parameters()), lr=1e-3)
     criterion = nn.MSELoss()
 
-    train_data_path ="J:\\coco2017\\train2017\\"
-    train_json_path ="J:\\coco2017\\annotations\\instances_train2017.json"
+    '''We will not be using the imagenet dataloader. Since we will mainly be using cpu, the dataloader
+    will take too long to actually load the data in memory. The following is manual way to work around this'''
 
-    test_data_path ="J:\\coco2017\\val2017\\"
-    test_json_path ="J:\\coco2017\\annotations\\instances_val2017.json"
+    #imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet')
+    #data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=4, shuffle=True)
+
+    train_data_path ="J:\ImageNet\ILSVRC2012_img_train"
+
+    val_data_path ="J:\ImageNet\ILSVRC2012_img_val"
+    val_xml_path ="J:\ImageNet\Anotations\ILSVRC2012_bbox_val_v3\val"
 
     transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
 
-    #Need to switch datasets from coco to ImageNet
+    imagenet_train_data_dir = os.listdir(train_data_path) #list of folders in train dataset
+    imagenet_train_data_dir.sort()
+    
+    imagenet_train_image_lists = []
+    for target in imagenet_train_data_dir:
+        imagenet_train_image_lists.append(os.listdir(train_data_path + '\\' + target))
 
-    coco_train_data = torchvision.datasets.CocoDetection(root = train_data_path, annFile= train_json_path, 
-                                                        transform=transform)
-    coco_train_dataloader = torch.utils.data.DataLoader(coco_train_data, batch_size=1, shuffle=True)
+    imagenet_val_data = os.listdir(val_data_path)
+    imagenet_val_targets = os.listdir(val_xml_path)
 
-    coco_test_data = torchvision.datasets.CocoDetection(root = test_data_path, annFile= test_json_path, 
-                                                        transform=transform)
-    coco_test_dataloader = torch.utils.data.DataLoader(coco_test_data, batch_size=1, shuffle=True)
+    imagenet_val_data.sort()
+    imagenet_val_targets.sort()
+
+    restore_lists = (imagenet_train_data_dir, imagenet_train_image_lists, imagenet_val_data, imagenet_val_targets)
+
+    #sort these two paths
+
+    
 
     epochs = 4
     for epoch in range(epochs):
         loss = 0
         i = 0
-        for features, labels in coco_train_dataloader:
+        for features, labels in data_loader:
             i += 1 #increase by batchsize
             optimizer.zero_grad()
             
@@ -144,9 +164,12 @@ if __name__ == '__main__':
             outs, enc_shape = res3(outs, enc_shape)
             outs = res4(outs, enc_shape)
 
-            print(labels)
-            print(outs.shape)
-            train_loss = criterion(torch.max(outs), labels)
+            #orginal_outs = orignal_model(features)
+
+
+            #print(labels)
+            #print(outs.shape)
+            train_loss = criterion(outs, labels)
 
             train_loss.backward()
 
@@ -154,7 +177,7 @@ if __name__ == '__main__':
 
             loss += train_loss.item()
 
-            if (i/4)%40 == 0:
+            if (i)%3 == 0:
                 print("epoch : {}, data : {}, loss = {:.6f}".format(epoch + 1, i, (loss/i)))
 
         loss = loss/i

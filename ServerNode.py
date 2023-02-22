@@ -57,6 +57,15 @@ class ServerProtocol:
         ack = self.connection.recv(1)
         #print(ack)
 
+    def heartbeat(self, return_message):
+        recv_message = self.connection.recv(1)
+        recv_message = int.from_bytes(message, 'big')
+
+        message = return_message.to_bytes(1, 'big')
+        self.connection.sendall(message)
+
+        return recv_message
+
     def close(self):
         self.connection.shutdown(SHUT_WR)
         self.connection.close()

@@ -67,6 +67,15 @@ class ClientProtocol:
             self.sockets[socket_number].sendall(b'\00')
             self.sockets_data[socket_number] = pickle.loads(data)
 
+    #heartbeat will only send/recv a single byte 
+    def heartbeat(self, message_number, socket_number):
+        message = message_number.to_bytes(1,'big')
+        
+        self.sockets[socket_number].sendall(message)
+        ack_message = self.sockets[socket_number].recv(1)
+
+        return int.from_bytes(ack_message, 'big')
+
 #main functionality for testing/debugging
 if __name__ == '__main__':
 
