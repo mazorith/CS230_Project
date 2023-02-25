@@ -18,7 +18,7 @@ print(img_tensor.shape)
 out = model(img_tensor)
 
 out1 = model.conv1(img_tensor)
-layer_size = total_size(out1.shape) #First Split here
+layer_size = total_size(out1.shape) #First Split here <--> actually we will just send the image
 print(out1.shape, layer_size)
 print('--------1--------')
 

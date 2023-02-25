@@ -86,6 +86,7 @@ class Resnet50_4(nn.Module):
         output = self.avgpool(output)
         output = torch.flatten(output, 1)
         output = self.fc(output)
+        #output = torch.argmax(output).view(1).to(torch.double)
         return output
 
 #Finetuning of custom models
@@ -108,48 +109,49 @@ if __name__ == '__main__':
     res3.encoder.load_state_dict(torch.load('AutoEncoders\\encoder_layer3.pt'))
     res4.decoder.load_state_dict(torch.load('AutoEncoders\\decoder_layer3.pt'))
 
-    res1.encoder.requires_grad = False
-    res2.decoder.requires_grad = False
-    res2.encoder.requires_grad = False
-    res3.decoder.requires_grad = False
-    res3.encoder.requires_grad = False
-    res4.decoder.requires_grad = False
+    # res1.encoder.requires_grad = False
+    # res2.decoder.requires_grad = False
+    # res2.encoder.requires_grad = False
+    # res3.decoder.requires_grad = False
+    # res3.encoder.requires_grad = False
+    # res4.decoder.requires_grad = False
 
     optimizer = torch.optim.Adam(list(res1.parameters()) + list(res2.parameters()) +
-                                list(res3.parameters()) + list(res3.parameters()), lr=1e-3)
-    criterion = nn.MSELoss()
+                                list(res3.parameters()) + list(res3.parameters()), lr=1e-2)
+    criterion = nn.CrossEntropyLoss() #nn.MSELoss() 
+
+    transform = torchvision.transforms.Compose([torchvision.transforms.Resize((500,500)),
+                                                torchvision.transforms.ToTensor()])
 
     '''We will not be using the imagenet dataloader. Since we will mainly be using cpu, the dataloader
     will take too long to actually load the data in memory. The following is manual way to work around this'''
 
-    #imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet')
-    #data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=4, shuffle=True)
+    imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', transform = transform)
+    data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=1, shuffle=True)
 
-    train_data_path ="J:\ImageNet\ILSVRC2012_img_train"
+    # train_data_path ="J:\ImageNet\ILSVRC2012_img_train"
 
-    val_data_path ="J:\ImageNet\ILSVRC2012_img_val"
-    val_xml_path ="J:\ImageNet\Anotations\ILSVRC2012_bbox_val_v3\val"
-
-    transform = torchvision.transforms.Compose([torchvision.transforms.ToTensor()])
-
-    imagenet_train_data_dir = os.listdir(train_data_path) #list of folders in train dataset
-    imagenet_train_data_dir.sort()
-    
-    imagenet_train_image_lists = []
-    for target in imagenet_train_data_dir:
-        imagenet_train_image_lists.append(os.listdir(train_data_path + '\\' + target))
-
-    imagenet_val_data = os.listdir(val_data_path)
-    imagenet_val_targets = os.listdir(val_xml_path)
-
-    imagenet_val_data.sort()
-    imagenet_val_targets.sort()
-
-    restore_lists = (imagenet_train_data_dir, imagenet_train_image_lists, imagenet_val_data, imagenet_val_targets)
-
-    #sort these two paths
+    # val_data_path ="J:\ImageNet\ILSVRC2012_img_val"
+    # val_xml_path ="J:\ImageNet\Anotations\ILSVRC2012_bbox_val_v3\val"
 
     
+
+    # imagenet_train_data_dir = os.listdir(train_data_path) #list of folders in train dataset
+    # imagenet_train_data_dir.sort()
+    
+    # imagenet_train_image_lists = []
+    # for target in imagenet_train_data_dir:
+    #     imagenet_train_image_lists.append(os.listdir(train_data_path + '\\' + target))
+
+    # imagenet_val_data = os.listdir(val_data_path)
+    # imagenet_val_targets = os.listdir(val_xml_path)
+
+    # imagenet_val_data.sort()
+    # imagenet_val_targets.sort()
+
+    # restore_lists = (imagenet_train_data_dir, imagenet_train_image_lists, imagenet_val_data, imagenet_val_targets)
+
+    # #sort these two paths
 
     epochs = 4
     for epoch in range(epochs):
@@ -169,8 +171,15 @@ if __name__ == '__main__':
 
             #print(labels)
             #print(outs.shape)
+            #outs = outs.to(torch.double)
+            use_label = torch.zeros(1,2000)
+            use_label[0][int(labels[0].item())] = 1.0 
+            #use_label = use_label.to(torch.double)
+            #print(torch.argmax(outs).view(1).dtype, labels.dtype)
             train_loss = criterion(outs, labels)
-
+            
+            print(torch.argmax(outs), torch.argmax(use_label), labels)
+            #train_loss.requires_grad = True
             train_loss.backward()
 
             optimizer.step()
