@@ -23,7 +23,8 @@ transform = torchvision.transforms.Compose([torchvision.transforms.Resize((500,5
 imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', transform = transform)
 data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=1, shuffle=False)
 
-file = open('Full_Model_Times.txt', 'w')
+file1 = open('Full_plus_Tri-Split.txt', 'w')
+file2 = open('Indv_layer.txt', 'w')
 
 print('pass')
 i = 0
@@ -54,6 +55,53 @@ with torch.no_grad():
         end_time4 = time.time() - start_time
 
         print(i, end_time1, end_time2, end_time3, end_time4)
-        file.write(str(i) + ',' + str(end_time1) + ',' + str(end_time2) + ',' + str(end_time3) + ',' + str(end_time4) + '\n')
+        file1.write(str(i) + ',' + str(end_time1) + ',' + str(end_time2) + ',' + str(end_time3) + ',' + str(end_time4) + '\n')
 
-file.close()
+        start_time = time.time()
+        out = model.conv1(features)
+        end_time1 = time.time() - start_time
+
+        start_time = time.time()
+        out = model.bn1(out)
+        end_time2 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.relu(out)
+        end_time3 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.maxpool(out)
+        end_time4 = time.time() - start_time
+
+        start_time = time.time()
+        out = model.layer1(out)
+        end_time5 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.layer2(out)
+        end_time6 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.layer3(out)
+        end_time7 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.layer4(out)
+        end_time8 = time.time() - start_time
+        
+        start_time = time.time()
+        out = model.avgpool(out)
+        end_time9 = time.time() - start_time
+        
+        start_time = time.time()
+        out = torch.flatten(out, 1)
+        out = model.fc(out)
+        end_time10 = time.time() - start_time
+
+        print(i, '-1', end_time1, end_time2, end_time3, end_time4, end_time5, end_time6, end_time7, end_time8, end_time9, end_time10)
+        file2.write(str(i) + ',' + str(end_time1) + ',' + str(end_time2) + ',' + str(end_time3) + ',' + str(end_time4)
+                    + ',' + str(end_time5) + ',' + str(end_time6) + ',' + str(end_time7) + ',' + str(end_time8) + 
+                    ',' + str(end_time9) + ',' + str(end_time10) + '\n')
+
+file1.close()
+file2.close()
