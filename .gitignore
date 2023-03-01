@@ -1,3 +1,6 @@
 LocalData/
 NetworkData/
 AutoEncoders/__pycache__/
+Tests/Full_plus_Tri-Split.txt
+Tests/Indv_layer.txt
+Tests/TestTensors/

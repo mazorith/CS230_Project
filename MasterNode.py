@@ -59,7 +59,7 @@ class ClientProtocol:
             while len(data) < length:
                 to_read = length - len(data)
                 data += self.sockets[socket_number].recv(
-                    4096 if to_read > 4096 else to_read)
+                    500000000 if to_read > 500000000 else to_read)
 
             # send our 0 ack
             assert len(b'\00') == 1

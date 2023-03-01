@@ -20,7 +20,7 @@ print(last_layer)
 transform = torchvision.transforms.Compose([torchvision.transforms.Resize((500,500)),
                                                 torchvision.transforms.ToTensor()])
 
-imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', transform = transform)
+imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', transform = transform, split='val')
 data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=1, shuffle=False)
 
 file1 = open('Full_plus_Tri-Split.txt', 'w')
