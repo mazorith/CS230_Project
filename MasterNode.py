@@ -8,29 +8,37 @@ import pickle
 class ClientProtocol:
 
     def __init__(self, number_of_sockets):
+        #for each server connection we will define a client socket
         self.sockets = []
         self.sockets_data = []
 
-        for i in range(number_of_sockets):
-            self.sockets.append(None)
-            self.sockets_data.append(None)
+        #flags
+        self.mutex_flag = 0
 
-    def connect(self, server_ip, server_port, socket_number = 0):
-        self.sockets[socket_number] = socket(AF_INET, SOCK_STREAM)
-        self.sockets[socket_number].connect((server_ip, server_port))
-
-    def close(self, socket_number = -1):
-        if socket_number == -1:
-            for socket in self.sockets:
-                socket.shutdown(SHUT_WR)
-                socket.close()
-                socket = None
-        else:
-            self.sockets[socket_number].shutdown(SHUT_WR)
-            self.sockets[socket_number].close()
-            self.sockets[socket_number] = None
+    #connection function will need to be called before client handshake
+    def connect(self, server_ip, server_port):
+        while self.mutex_flag != 0:
+            time.sleep(0.001)
         
+        self.mutex_flag = 1
+        self.sockets.append(socket(AF_INET, SOCK_STREAM))
+        self.sockets[len(sockets)-1].connect((server_ip, server_port))
+        self.sockets_data.append('')
+        self.mutex_flat = 0
 
+        return len(sockets) - 1
+
+    #client handshake needs to be called immediately after connect function 
+    def client_handshake(self, socket_number):
+        print('Sending handshake to server')
+        self.sockets[socket_number].sendall(b'\00')
+        ack = self.sockets[socket_number].recv(1)
+        if(ack == b'\00'):
+            print('Successfully recived server Handshake')
+        else:
+            print('Message recived not server ack')
+
+    #as we are multithreading we only need to work about sending data through one connection
     def send_data(self, data, socket_number):
         data = pickle.dumps(data)
         length = pack('>Q', len(data))
@@ -41,15 +49,7 @@ class ClientProtocol:
         ack = self.sockets[socket_number].recv(1)
         #print(ack)
 
-    def client_handshake(self, socket_number):
-        print('Sending handshake to server')
-        self.sockets[socket_number].sendall(b'\00')
-        ack = self.sockets[socket_number].recv(1)
-        if(ack == b'\00'):
-            print('Successfully recived server Handshake')
-        else:
-            print('Message recived not server ack')
-
+    #same logic as above function, we only need to recive data from on connection
     def handle_data(self, socket_number):
         collected_message = False
         while not collected_message:
@@ -75,6 +75,17 @@ class ClientProtocol:
         ack_message = self.sockets[socket_number].recv(1)
 
         return int.from_bytes(ack_message, 'big')
+
+    def close(self, socket_number = -1):
+        if socket_number == -1:
+            for socket in self.sockets:
+                #socket.shutdown(SHUT_WR)
+                socket.close()
+                socket = None
+        else:
+            #self.sockets[socket_number].shutdown(SHUT_WR)
+            self.sockets[socket_number].close()
+            self.sockets[socket_number] = None
 
 #main functionality for testing/debugging
 if __name__ == '__main__':

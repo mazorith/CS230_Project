@@ -5,105 +5,95 @@ import time
 import random
 from queue import PriorityQueue
 from PIL import Image
-from CustomRes50 import Resnet50_1, Resnet50_2, Resnet50_3, Resnet50_4
 from MasterNode import ClientProtocol
+from ServerNode impoer SeverProtocol
 
-#Currently hardcoding for 3 servers
+#using global variables to share data between threads
 
-#task scheduler variables and functions
-#these will be multithreaded
+is_master = False #using as switch variable to control functionality
 
-def heartbeat_message_thread(client, server_id):
-    #loop heartbeat messages
-    while heartbeat_termination_flag == 0:
-        time.sleep(0.005)
-        if server_message_semaphores[server_id] == 0:
-            server_message_semaphores[server_id] = 1
+#connection lists
+cp_list = []
+#this will be a list of lists representing the server connections per device
+sp_addr_list = []
+#only for master node will be a list of lists of tuples #(is_running, model_split) for each node in network
+node_resource_semaphores = [] 
 
-            server_heartbeat_message = client.heartbeat(messages_to_heartbeat[server_id], server_id)
-            #if server wants to send data it will send a heart message of 2
-            if server_heartbeat_message == 2:
-                handle_server_message_flags[server_id] = 0
-
-            server_message_semaphores[server_id] = 0
-
-    #once we are finished send heartbeat termination message to kill server process
-    #termination message is 255
-    if server_message_semaphores[server_id] == 0:
-        server_message_semaphores[server_id] = 1
-
-        server_heartbeat_message = client.heartbeat(255, server_id)
-
-        server_message_semaphores[server_id] = 0
-
-
-def send_message_thread(client, message, server_id):
-    message_not_sent = True
-    while message_not_sent:
-        if server_message_semaphores[server_id] == 0:
-            server_message_semaphores[server_id] = 1
-
-            client.send_data(message, server_id)
-
-            server_message_semaphores[server_id] = 0
-            message_not_sent = True
-        else:
-            time.sleep(0.005)
-
-def handle_message_thread(client, server_id):
-    message_not_recived = True
-    while message_not_recived:
-        if server_message_semaphores[server_id] == 0:
-            server_message_semaphores[server_id] = 1
-
-            client.handle_data(server_id)
-            data = client.sockets_data[server_id]
-            
-            #TODO: process message here
-
-            server_message_semaphores[server_id] = 0
-            message_not_recived = False
-        else:
-            time.sleep(0.005)
-
-#TODO: change these to priority queues
-model2_tasks = []
+#lists containing the data inputs for the model
+#TODO: change lists to priority queues for time squental processing 
+raw_img_tasks = []
+split2_tasks = []
 model3_tasks = []
-model4_tasks = []
-task_list_semaphores = [0,0,0]
 
-#taskhandler variables and semaphores => 0 are open resources, 1 are held/inactive resources
-server_message_semaphores = [0,0,0]
-server_model_semaphores = [[(0, 0),(0, 0),(0, 0)],  #server "states"
-                           [(0, 0),(0, 0),(0, 0)],  #(is_running, Resnet50_#)
-                           [(0, 0),(0, 0),(0, 0)]] 
-handle_server_message_flags = [1,1,1]
-messages_to_heartbeat = [0,0,0]
-heartbeat_termination_flag = 0
+#TODO: add complexity to completed_tasks
+completed_tasks = (0,0) #currently (# of tasks complete, # of tasks correct [top 1%])
 
+#list of models splits for the node, will contain 1 for master and 3 for worker nodes
+resources = None
+resource_semaphores = None
+min_model_exc_time = 0.82
+avg_model_exc_time = 1.08
 
-#taskhandler client protocall
-cp = ClientProtocol()
+def server_connection_thread(sp):
+    global is_master
+    global sp_addr_list
+    global node_resource_semaphores
 
-cp.connect('127.0.0.1', 55555,0)
-cp.connect('127.0.0.1', 55556,1)
-cp.connect('127.0.0.1', 55557,2)
-cp.client_handshake(0)
-cp.client_handshake(1)
-cp.client_handshake(2)
+    if is_master:
+        while is_master:
+            ret_list = sp.server_handshake()
+            sp_addr_list.append(ret_list)
+            node_resource_semaphores.append([(0,0),(0,0),(0,0)])
 
+    else:
+        ret_list = sp.server_handshake()
+        sp_addr_list.append(ret_list)
+        node_resource_semaphores.append([(0,0),(0,0),(0,0)])
 
-#client model
+def personal_execution(features, labels):
+    global resources
+    global resources_semaphores
+    global completed_tasks
 
-client_model = Resnet50_1()
+    resources_semaphores = 1
+    resources(features) 
 
-client_model.encoder.load_state_dict(torch.load('AutoEncoders\\encoder_conv1.pt'))
-client_model.decoder.load_state_dict(torch.load('AutoEncoders\\decoder_conv1.pt'))
+    #TODO:create code for checking accuracy
 
-imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', split='val')
-data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=1, shuffle=True)
+    completed_tasks[0] += 1
+    resources_semaphores = 0
 
-for data, label in data_loader:
-    output = client_model(data)
+if __name__ == '__main__':
+    if sys.argv[1] == '--master':
+        print('starts as master')
 
-    #TODO send data to tasks
+        is_master = True
+        thread_list = []
+
+        sp = ServerProtocol()
+        sp.listen('127.0.0.1', 5555)
+        thread_list.append(threading.Thread(target=server_connection_thread, args=(sp)))
+
+        global resources 
+        global resources_semaphores
+
+        #TODO: load model into resources
+        resources = None
+        resources_semaphores = 0
+
+        transform = torchvision.transforms.Compose([torchvision.transforms.Resize((500,500)),
+                                                torchvision.transforms.ToTensor()])
+
+        imagenet_data = torchvision.datasets.ImageNet('J:\\ImageNet', transform = transform, split='val')
+        data_loader = torch.utils.data.DataLoader(imagenet_data, batch_size=1, shuffle=False) 
+
+        start_time = 0
+        with torch.no_grad():
+            for features, labels in data_loader:
+                raw_image_tasks.append(features, lables)
+                if resource_semaphores == 0:  
+                    start_time = time.time()
+                    threading.Thread(target=personal_execution, args=(features, labels))
+
+    else:
+        print('starts as worker')
