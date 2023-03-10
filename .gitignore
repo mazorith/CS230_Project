@@ -1,3 +1,4 @@
+__pycache__/
 LocalData/
 NetworkData/
 AutoEncoders/__pycache__/
