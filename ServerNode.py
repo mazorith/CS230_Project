@@ -106,7 +106,7 @@ class ServerProtocol:
         return recv_message
 
     def close(self):
-        for i in range len(self.connections):
+        for i in range(len(self.connections)):
             #self.connections[i].shutdown(SHUT_WR)
             self.connections[i].close()
 

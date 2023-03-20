@@ -4,6 +4,7 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 import pickle
+import time
 
 class ClientProtocol:
 
@@ -22,11 +23,11 @@ class ClientProtocol:
         
         self.mutex_flag = 1
         self.sockets.append(socket(AF_INET, SOCK_STREAM))
-        self.sockets[len(sockets)-1].connect((server_ip, server_port))
+        self.sockets[len(self.sockets)-1].connect((server_ip, server_port))
         self.sockets_data.append('')
         self.mutex_flat = 0
 
-        return len(sockets) - 1
+        return len(self.sockets) - 1
 
     #client handshake needs to be called immediately after connect function 
     def client_handshake(self, socket_number):
