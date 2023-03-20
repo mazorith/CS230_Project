@@ -17,7 +17,7 @@ class ClientProtocol:
         self.mutex_flag = 0
 
     #connection function will need to be called before client handshake
-    def connect(self, server_ip, server_port):
+    def connect(self, server_ip, server_port=5555):
         while self.mutex_flag != 0:
             time.sleep(0.001)
         

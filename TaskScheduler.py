@@ -32,9 +32,15 @@ sp_addr_list = []
 cp_connection_semaphores = []
 sp_connection_semaphores = []
 
-heartbeat_messages = [0] #will be a list of 1 for nodes, will expand for connections on master node
+#these will be a list of 1 for nodes, will expand for connections on master node
+heartbeat_messages = [[0,0]] 
+received_heartbeat_messages = [0]
+heartbeat_semaphores = [0]
 
-#only for master node will be a list of lists of tuples #(is_running, model_split) for each node in network
+#TODO:will explain this later
+ready_node_connection_list = []
+
+#only for master node will be a list of lists of #[is_running, model_split] for each node in network
 node_resource_semaphores = [] 
 
 #lists containing the data inputs for the model
@@ -43,14 +49,14 @@ node_resource_semaphores = []
 tasks_to_offload = []
 raw_img_tasks = []
 
-#these tasks will be lists of tuples (node, #_of_tasks) for master node
+#these tasks will be lists of lists (node, #_of_tasks) for master node
 #else they will be lists of actual intermidate values for resource nodes
 split2_tasks = []
 split3_tasks = []
 return_tasks = [] 
 
 #TODO: add complexity to completed_tasks
-completed_tasks = (0,0) #currently (# of tasks complete, # of tasks correct [top 1%])
+completed_tasks = [0,0] #currently (# of tasks complete, # of tasks correct [top 1%])
 
 #list of models splits for the node, will contain 1 for master and 3 for worker nodes
 resources = []
@@ -69,6 +75,7 @@ def server_connection_thread(sp):
 
 
     #TODO: add flag so we do not append more node resouces while scheduler is searching for nodes
+    #TODO: append a (0,0) to ready_node_connection_list
     if is_master:
         while is_master:
             ret_list = sp.server_handshake()
@@ -111,7 +118,7 @@ def client_connection_thread(cp, addr, port, is_first_connection):
     cp_connection_semaphores.append(semaphore_list)
 
 #personal nodes resource will be element 0 in resources
-def personal_execution(features, labels):
+def personal_execution_thread(features, labels):
     global resources
     global resources_semaphores
     global completed_tasks
@@ -124,7 +131,7 @@ def personal_execution(features, labels):
     resources_semaphores[0] = 0
 
 #thread function for master node only
-def scheduler():
+def scheduler_thread():
     global all_task_completed
     global node_resource_semaphores
     global split2_tasks
@@ -132,6 +139,8 @@ def scheduler():
     global return_tasks 
 
     avg_message_delays = [0.38, 0.34, 0.42, 0.02] #raw_image, split-1 out, split-2 out, final output
+
+    
 
     #main scheduler loop
     while not all_task_completed:
@@ -177,7 +186,8 @@ def scheduler():
         time.sleep(0.01)
 
 #this will be use on every the first of every 4 connections of master or the first client protocol socket of every node
-def heartbeat(protocol, protocol_index):
+#secondary protocol is needed for nodes sp node
+def heartbeat_thread(protocol, protocol_index, secondary_protocol=None): 
     global cp_list
     global cp_connection_semaphores
     global sp_addr_list
@@ -185,59 +195,186 @@ def heartbeat(protocol, protocol_index):
     global is_master
     global all_task_completed
     global heartbeat_messages
+    global heartbeat_semaphores
+    global received_heartbeat_messages
+
+    global resources_semaphores
+
+    global ready_node_connection_list
     
+    #master to node
+    # 0 basic connection do nothing
+    # 1 master will be sending data of other nodes for connection to new node, ready any master port
+    # 2 master telling node to ready itself for new node connection
+    # 3 master is directing traffic, ready first master port for infromation (data for split 2 and 3)
+    # 4 master will be sending raw image data to node, ready any master port (data for split 1)
+    #   1, 3, and 4 will be followed by a connection port(s) in which to send data
+    # 255 master is terminating connection (have node kill itself)
+
+    #node to master
+    # 0 basic connection do nothing
+    # 5 node wants to send completion data to master
+    # 6 node finished a task and wants to send state to master, request for port (output for split 3)
+    # 255 confirmation on termination (will kill itself)
+
     if isinstance(protocol, ClientProtocol):
         while not all_task_completed:
-            protocol.heartbeat(heartbeat_messages[0], cp_list[protocol_index][0])
-            time.sleep(0.01)
-    else:
+            recived = protocol.heartbeat(heartbeat_messages[0][0], cp_list[protocol_index][0])
+            #for 1-4 we will need to send another heartbeat back as confirmation of request
+
+            #network updates
+            if recived == 1:
+                heart_check = protocol.heartbeat(1, cp_list[protocol_index][0])
+                if heart_check == 1:
+                    protocol.handle_data(cp_list[protocol_index][0])
+
+                    #TODO:recive message to set split contexts (to bypass need to create a function for it)
+
+                    addrs = protocol.sockets_data[protocol_index]
+                    for addr in addrs:
+                        threading.Thread(target=client_connection_thread, args=(protocol, addr[0], 5555, False))
+            if recived == 2:
+                heart_check = protocol.heartbeat(2, cp_list[protocol_index][0])
+                if heart_check == 2:
+                    threading.Thread(target=server_connection_thread, args=(secondary_protocol))
+                
+
+            #intermediate data transfer
+            if recived == 3:
+                heart_check = protocol.heartbeat(3, cp_list[protocol_index][0])
+                if heart_check == 3:
+                    protocol.handle_data(cp_list[protocol_index][0])
+                    #TODO:call send_message thread (need to update futher)
+
+            if recived == 4:
+                heart_check = protocol.heartbeat(4, cp_list[protocol_index][0])
+                if heart_check == 4:
+                    protocol.handel_data(cp_list[protocol_index][0])
+                    addr = protocol.sockets_data[protocol_index]
+                    #TODO: call receive message thread (need to update further)
+
+            #output transfer and state updates
+            if recived == 5:
+                protocol.send_data(resources_semaphores, cp_list[protocol_index][0])
+                heartbeat_messages[0][0] = 0
+
+            if recived == 6:
+                protocol.handle_data(cp_list[protocol_index][0])
+                addr = protocol.sockets_data[protocol_index]
+                #TODO:call send_message thread (need to update futher)
+                heartbeat_messages[0][0] = 0
+
+            if recived == 255:
+                #TODO:die
+                heartbeat_messages[0][0] = 0
+
+            if recived != 0:
+                received_heartbeat_messages[0][0] = recived 
+
+            #time.sleep(0.005)
+
+    elif isinstance(protocol, ServerProtocol):
         while not all_task_completed:
-            protocol.heartbeat(heartbeat_messages[protocol_index], sp_addr_list[protocol_index][0])
+            recived = protocol.heartbeat(heartbeat_messages[protocol_index][0], sp_addr_list[protocol_index][0])
+            #we will only care about node requests if master node is at idle with the node
+            #we will need to send a heartbeat back as confirmation of request
+            if heartbeat_messages[protocol_index][0] == 0:
+                if recived == 5:
+                    heart_check = protocol.heartbeat(5, sp_addr_list[protocol_index][0])
+                    if heart_check == 5:
+                        #TODO:find open slot between this master and existing node
+                        continue
+
+                if recived == 6:
+                    heart_check = protocol.heartbeat(6, sp_addr_list[protocol_index][0])
+                    if heart_check == 6:
+                        protocol.handle_data(sp_addr_list[protocol_index][0])
+                        idx = protocol.addresses.index(addr)
+                        state_data = protocol.datas[idx]
+
+                        for i, data in enumerate(state_data):
+                            node_resource_semaphores[protocol_index][i][0] = data
+            #network updates
+            if recived == 1:
+                connection_list = []
+                for i, l in enumerate(sp_addr_list):
+                    if i != len(sp_addr_list) - 1:
+                        connection_list.append(l[0][0])
+                        ready_node_connection_list[i] = 0
+                    
+
+                protocol.send_data(connection_list, sp_addr_list[protocol_index][0])
+
+                #TODO:send message to set split contexts of node (to bypass need to create a function for it)
+                
+                heartbeat_messages[protocol_index][0] = 0
+
+            if recived == 2:
+                ready_node_connection_list[protocol_index] = 1
+                heartbeat_messages[protocol_index][0] = 0
+
+            #intermediate data transfer
+            if recived == 3:
+                #index of address for which to use TODO:rework this for client and server protocols
+                addr = heartbeat_messages[protocol_index][1]
+                protocol.send_data(addr, sp_addr_list[protocol_index][0])
+                heartbeat_messages[protocol_index][0] = 0
+
+            if recived == 4:
+                #index of address for which to use TODO:rework this for client and server protocols
+                addr = heartbeat_messages[protocol_index][1]
+                protocol.send_data(addr, sp_addr_list[protocol_index][0])
+                #TODO:send data with send_message_thread
+                heartbeat_messages[protocol_index][0] = 0
+
+            if recived != 0:
+                received_heartbeat_messages[protocol_index][0] = recived  
+            
+            #time.sleep(0.005)
 
 #this is only for sending data over channel                
-def send_message(protocol, protocol_index, data, addr=None):
+def send_message_thread(protocol, data, protocol_index, channel_selection=0):
     global cp_list
     global cp_connection_semaphores
     global sp_addr_list
     global sp_connection_semaphores
-    global is_master
 
-    #this is basic logic, TODO: create a secondary rule to prevent collision
+    #this is basic logic, TODO: create a secondary rule to prevent collision (kind of did this will need to test)
     if isinstance(protocol, ClientProtocol):
-        #conn_offset = cp_list[protocol_index]
-        offset = 4 if is_master else 3 
+        protocol.send_data(data, cp_list[protocol_index][channel_selection])
 
-        #while
-    else:
-        conn_list = sp_addr_list[protocol_index]
-        channel_selection = 0
-        iter_offset = 4 if is_master else 3
+        #this should be set to 1 before calling this thread function
+        cp_connection_semaphores[protocol_index][channel_selection] = 0
 
-        avalible_channel = False
-        while not avalible_channel:
-            for i in range(iter_offset):
-                time.sleep(0.01)
+    elif isinstance(protocol, ServerProtocol):
+        protocol.send_data(data, sp_addr_list[protocol_index][channel_selection])
 
-                if iter_offset != 4 and i != 0 and sp_connection_semaphores[protocol_index][i] == 0:
-                    sp_connection_semaphores[protocol_index][i] = 1
-                    if not is_master:
-                        continue
-                        #TODO:send message to master that server port is ready
-                        #Set some variable to true while we wait for response from server to ensure that connection isn't processing
-                        #have another variable which will 
-                    
-                    #need to encapulate below this in case we there is a resource conflict
-                    channel_selection = i
-                    avalible_channel = True
-                    break
-                    
-
-        protocol.send_data(data, conn_list[protocol_index][channel_selection])
-
+        #this should be set to 1 before calling this thread function
         sp_connection_semaphores[protocol_index][channel_selection] = 0
 
+#this is only for receiving data over channel  
+def receive_message(protocol, data, protocol_index, channel_selection=0):
+    global cp_list
+    global cp_connection_semaphores
+    global sp_addr_list
+    global sp_connection_semaphores
 
-def receive_message(protocol):
+    #this is basic logic, TODO: create a secondary rule to prevent collision (kind of did this will need to test)
+    if isinstance(protocol, ClientProtocol):
+        protocol.handle_data(cp_list[protocol_index][channel_selection])
+
+        #TODO:Logic to collect and store data onto node
+
+        #this should be set to 1 before calling this thread function
+        cp_connection_semaphores[protocol_index][channel_selection] = 0
+
+    elif isinstance(protocol, ServerProtocol):
+        protocol.handle_data(sp_addr_list[protocol_index][channel_selection])
+
+        #TODO:Logic to collect and store data onto node
+
+        #this should be set to 1 before calling this thread function
+        sp_connection_semaphores[protocol_index][channel_selection] = 0
 
 if __name__ == '__main__':
     #TODO: refactor to have master ip as input of sys.argv[2], and port as sys.argv[3]
@@ -274,7 +411,7 @@ if __name__ == '__main__':
         current_num_tasks_offloaded = 0
 
         #Spin up schdeuler thread 
-        thread_list.append(threading.Thread(target=scheduler, args=()))
+        thread_list.append(threading.Thread(target=scheduler_thread, args=()))
 
         with torch.no_grad():
             for features, labels in data_loader:
@@ -289,7 +426,7 @@ if __name__ == '__main__':
                     personal_task_processing_number = task[0]
 
                     personal_task_start_time = time.time()
-                    threading.Thread(target=personal_execution, args=(task[1], task[2]))
+                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2]))
 
                     resource_semaphores[0] = 1
 

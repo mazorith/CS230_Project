@@ -1,7 +1,8 @@
 __pycache__/
 LocalData/
 NetworkData/
-AutoEncoders/__pycache__/
+Tests/AutoEncoders/
 Tests/Full_plus_Tri-Split.txt
 Tests/Indv_layer.txt
 Tests/TestTensors/
+Tests/CustomRes50.py

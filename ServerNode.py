@@ -23,7 +23,7 @@ class ServerProtocol:
         self.is_master = is_master
 
     #standard listen function
-    def listen(self, server_ip, server_port):
+    def listen(self, server_ip, server_port=5555):
         self.socket = socket(AF_INET, SOCK_STREAM)
         self.socket.bind((server_ip, server_port))
         self.socket.listen(1)
@@ -59,7 +59,7 @@ class ServerProtocol:
         self.mutex_flag = 0
 
         #for task handling purposes return the new addresses together 
-        return self.addresses[-4:] if is_master else self.addresses[-3:]
+        return self.addresses[-4:] if self.is_master else self.addresses[-3:]
 
     #only need to handle data with respect to specific addresses 
     def handle_data(self, addr):
