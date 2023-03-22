@@ -17,9 +17,17 @@ Also for further simplicity, this will be hardcode for a 4 node setup, including
 since we are limiting the resource slot capacity per worker node to 3. 
 
 We will also be using threaded sockets with global variables to share data between threads
+
+
+P.S: Yes the logic in the code is messy, read at your own risk. >.>
 =====================================================================================================
 '''
 
+'''
+                                        ---------------------------
+----------------------------------------| Global shared variables |----------------------------------------
+                                        ---------------------------
+'''
 is_master = False #using as switch variable to control functionality
 all_task_completed = False #global completion variable
 
@@ -34,8 +42,7 @@ sp_connection_semaphores = []
 
 #these will be a list of 1 for nodes, will expand for connections on master node
 heartbeat_messages = [[0,0,0,0,0]] 
-received_heartbeat_messages = [0]
-heartbeat_semaphores = [0]
+heartbeat_semaphores = [0,0] #these are for worker nodes, if set they want to hearbeat either 6 or 7 respectively 
 
 #TODO:will explain this later
 ready_node_connection_list = []
@@ -73,41 +80,76 @@ avg_model_exc_time = 1.08
 avg_batch_model_offload_time = [2.16, 2.30, 1.87] #from calculations using recorded data - batch of [3,6,6]
 avg_offload_factors = [0.76,0.73,0.36] #customizable modification factors for avg_batch_model_offload_time
 
+'''
+                                        -------------------------------
+----------------------------------------| Connection thread functions |----------------------------------------
+                                        -------------------------------
+'''
+
 def server_connection_thread(sp):
     global is_master
     global sp_addr_list
+    global sp_connection_semaphores
     global node_resource_semaphores
+    global heartbeat_messages
 
-    #TODO: add functionality to start heartbeat messages??
-
+    heartbeat_threads = []
 
     #TODO: add flag so we do not append more node resouces while scheduler is searching for nodes
     #TODO: append a (0,0) to ready_node_connection_list
     if is_master:
-        while is_master:
+        while len(sp_addr_list) < 3: #hardcoding for 3 nodes
             ret_list = sp.server_handshake()
             sp_addr_list.append(ret_list)
+            sp_connection_semaphores.append([0,0,0,0])
+
+            #ready old nodes for new node connection
+            if len(heartbeat_messages) > 0:
+                for i in range(len(heartbeat_messages)):
+                    while heartbeat_messages[i][0] != 0:
+                        time.sleep(0.001)
+                    heartbeat_messages[i][0] = 2
+
+            #initialize heartbeat message for receiving existing nodes addresses to connect too
+            heartbeat_messages.append([1,0,0,0,0])
 
             #optimal split configurations without dynamic contex switching
-            #even though we are hardcoding 3 worker nodes the same algorithm can be used here for more just using (%1 & %3) else (%2)
+            #even though we are hardcoding 3 worker nodes the same algorithm can be used here for more nodes just using (%1, %2, & %3)
             num_of_nodes = len(sp_addr_list)
-            if num_of_nodes == 1 or num_of_nodes == 3:
-                #default split (1,2,3) || tri-split (1,2,3) - (1,2,2) - (2,2,3)
+            if num_of_nodes == 1:
+                #default split (1,2,3) 
                 node_resource_semaphores.append([[1,0],[2,0],[3,0]])
-                pass
             elif num_of_nodes == 2:
                 #2 node split (1,2,2) - (2,2,3)
-                #TODO: call a context switch of node 1
                 node_resource_semaphores.append([[2,0],[2,0],[3,0]])
-                pass 
+            elif num_of_nodes
+                #tri-split (1,2,3) - (1,2,2) - (2,2,3)
+
+                #do a context switch on node 2 before appending node 3
+                node_resource_semaphores[1] = [[1,0],[2,0],[2,0]]
+                while heartbeat_messages[1][0] != 0:
+                    time.sleep(0.001)
+                heartbeat_messages[1][0] = 3
+
+                node_resource_semaphores.append([[2,0],[2,0],[3,0]])
+
+
+            new_thread = threading.Thread(target=heartbeat_thread, args=(sp, len(sp_addr_list)-1))
+            hearbeat_threads.append(new_thread)
+
+        for thread in heartbeat_threads:
+            thread.join()
 
     #currently only master node cares about external node resource states
     else:
         ret_list = sp.server_handshake()
         sp_addr_list.append(ret_list)
+        sp_connection_semaphores.append([0,0,0,0])
+    
 
 #establish connection to server protocol (will not be used by master node)
-def client_connection_thread(cp, addr, port, is_first_connection):
+#we need to pass in cp so we can spin up the heartbeat thread for client
+def client_connection_thread(cp, addr, port, is_first_connection, sp=None):
     global cp_list
     global cp_connection_semaphores
 
@@ -124,11 +166,33 @@ def client_connection_thread(cp, addr, port, is_first_connection):
     cp_list.append(cp_append_list)
     cp_connection_semaphores.append(semaphore_list)
 
+    if is_first_connection:
+        new_thread = threading.Thread(target=heartbeat_thread, args=(cp, len(cp_list)-1), sp)
+        new_thread.join()
+
+'''
+                               -------------------------------------------------
+-------------------------------| model creation and execution thread functions |-------------------------------
+                               -------------------------------------------------
+'''
+
 #takes a list of splits as [1,2,3] or [2,2,3]
 def set_model_splits(splits):
     global resources
     global resource_semaphores
 
+    processes_empty = False:
+
+    #ensure that all tasks have been processed before context switching
+    while not processes_empty:
+        processes_empty = True
+        for resource in resources:
+            if resources[1] != 0
+                processes_empty = False
+        if not processes_empty:
+            time.sleep(0.01)
+
+    #context switch/set splits
     for split in splits:
         model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
         if split = 1:
@@ -181,17 +245,23 @@ def personal_execution_thread(features, labels, resources_index, model_split=0):
     
     resources_semaphores[resources_index] = 0
 
+'''
+                                           -----------------------------
+-------------------------------------------| scheduler thread function |-------------------------------------------
+                                           -----------------------------
+'''
+
 #thread function for master node only
-def scheduler_thread():
+def scheduler_thread(sp):
     global all_task_completed
     global node_resource_semaphores
+    global sp_addr_list
+    global sp_connection_semaphores
+    global heartbeat_messages
+
     global split2_tasks
     global split3_tasks 
     global return_tasks 
-
-    avg_message_delays = [0.38, 0.34, 0.42, 0.02] #raw_image, split-1 out, split-2 out, final output
-
-    
 
     #main scheduler loop
     while not all_task_completed:
@@ -200,11 +270,22 @@ def scheduler_thread():
         for index, node in enumerate(node_resource_semaphores):
             for slot in node:
                 #check if avaible resource for raw image
-                if len(tasks_to_offload) > 0:
-                    if slot[1] == 0:
-                        tasks_to_offload.pop(0)
-                        #TODO:send message
-                        break
+                if len(tasks_to_offload) > 0 and slot[0] == 1:
+                    #check channel states for this node
+                    channel_is_available = False
+                    channel_save_index = 1
+                    for i, flag in enumerate(sp_connection_semaphores[index]):
+                        if flag == 0 and i != 0 and not channel_is_available:
+                            sp_connection_semaphores[index][i] = 1
+                            channel_is_available = True
+                            channel_save_index = i
+
+                    id channel_is_available:
+                        task = tasks_to_offload.pop(0)
+                        message = [5,[0,channel_save_index], [index, channel_save_index], task, 0]
+                        while heartbeat_messages[index][0] != 0:
+                            time.sleep(0.001)
+                        heartbeat_messages[index] = message
                 
                 #check if avaible resouce for second split tasks
                 if slot[0] == 2 and slot[1] == 0:
@@ -236,6 +317,12 @@ def scheduler_thread():
 
         time.sleep(0.01)
 
+'''
+                                           -----------------------------
+-------------------------------------------| heartbeat thread function |-------------------------------------------
+                                           -----------------------------
+'''
+
 #this will be use on every the first of every 4 connections of master or the first client protocol socket of every node
 #secondary protocol is needed for nodes sp node
 def heartbeat_thread(protocol, protocol_index, secondary_protocol=None): 
@@ -247,7 +334,6 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
     global all_task_completed
     global heartbeat_messages
     global heartbeat_semaphores
-    global received_heartbeat_messages
 
     global resources_semaphores
     global node_channel_semaphores
@@ -362,10 +448,12 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                 terminate = True
                 heartbeat_messages[0][0] = 0
 
-            if recived != 0:
-                received_heartbeat_messages[0][0] = recived 
+            if heartbeat_semaphores[0] == 1:
+                heartbeat_messages[0][0] = 6
+            elif heartbeat_semaphores[1] == 1:
+                heartbeat_messages[0][0] = 7
 
-            time.sleep(0.005)
+            time.sleep(0.001)
 
 #========================================================== Master node ===========================================================
     elif isinstance(protocol, ServerProtocol):
@@ -457,11 +545,14 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                                                                              heartbeat_messages[protocol_index][2][1]))
 
                 heartbeat_messages[protocol_index] = [0,0,0,0,0]
-
-            if recived != 0:
-                received_heartbeat_messages[protocol_index][0] = recived  
             
-            time.sleep(0.005)
+            time.sleep(0.001)
+
+'''
+                                           ----------------------------
+-------------------------------------------| message thread functions |-------------------------------------------
+                                           ----------------------------
+'''
 
 #this is only for sending data over channel                
 def send_message_thread(protocol, data, protocol_index, channel_selection=0):
@@ -529,7 +620,16 @@ def receive_message_thread(protocol, protocol_index, channel_selection=0, data_t
 
     #TODO:if not is master update heartbeat message to update state
 
+'''
+                                                    ----------------
+----------------------------------------------------| main thread  |----------------------------------------------------
+                                                    ----------------
+'''
+
 if __name__ == '__main__':
+
+#========================================================== Master node ===========================================================
+
     #TODO: refactor to have master ip as input of sys.argv[2], and port as sys.argv[3]
     if sys.argv[1] == '--master': 
         print('starts as master')
@@ -614,6 +714,8 @@ if __name__ == '__main__':
 
             #TODO:Join task Threads
             #all_task_completed = True
+
+#========================================================== Worker node ===========================================================
 
     else:
         print('starts as worker')
