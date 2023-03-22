@@ -73,7 +73,7 @@ context_switch_semaphore = 0
 #min_model_exc_time = 0.82
 avg_model_exc_time = 1.08
 avg_batch_model_offload_time = [2.16, 2.30, 1.87] #from calculations using recorded data - batch of [3,6,6]
-avg_offload_factors = [0.76,0.73,0.36] #customizable modification factors for avg_batch_model_offload_time
+avg_offload_factors = [0.86,0.83,0.46] #customizable modification factors for avg_batch_model_offload_time
 
 '''
                                         -------------------------------
@@ -195,7 +195,7 @@ def set_model_splits(splits):
     while not processes_empty:
         processes_empty = True
         for resource in resources:
-            if resources[1] != 0:
+            if resource != 0:
                 processes_empty = False
         if not processes_empty:
             time.sleep(0.01)
@@ -241,7 +241,7 @@ def personal_execution_thread(features, labels, task_num, resources_index=0, mod
     else:
         output = resources[resources_index][0](features)
         output = torch.flatten(output, 1)
-        output = resources[resources_index][1](features)
+        output = resources[resources_index][1](output)
 
     if is_master:
         if (torch.argmax(output, axis=1)==labels):
@@ -256,8 +256,12 @@ def personal_execution_thread(features, labels, task_num, resources_index=0, mod
         elif model_split == 3:
             output = torch.argmax(output, axis=1)
             return_tasks.append([output, task_num])
+            heartbeat_semaphores[0] = 1
     
-    resource_semaphores[resources_index] = 0
+    if is_master:
+        resource_semaphores[resources_index] = 0
+    else:
+        resource_semaphores[resources_index][1] = 0
 
     #try to send updated state to master
     heartbeat_semaphores[1] = 1
@@ -485,7 +489,6 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 
                     protocol.send_data(data, cp_list[protocol_index][0])
                     heartbeat_messages[0][0] = 0
-                    heartbeat_semaphores[1] = 0
 
                     #try to send updated state to master
                     heartbeat_semaphores[1] = 1
@@ -548,10 +551,12 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 #--------------------------------------------------output transfer and state updates---------------------------------------------------
             if recived == 6:
                 #since we will return the argmaxed result message time is negligible
-                return_data = return_tasks.pop(0)
+                return_data = 0
+                if len(return_tasks) != 0:
+                    return_data = return_tasks.pop(0)
 
                 #check if more return data otherwise we can pass idle heartbeat
-                if len(return_data) == 0:
+                if len(return_tasks) <= 0:
                     heartbeat_semaphores[0] == 0
 
                 protocol.send_data(return_data, cp_list[protocol_index][0])
@@ -602,10 +607,11 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                         state_data = protocol.datas[idx]
 
                         #add to stats
-                        completed_tasks[0] += 1
-                        if data == labels:
-                            completed_tasks[1] += 1
-                        print('Task: ', task_num, ' complete on offloaded')
+                        if not isinstance(state_data, int):
+                            completed_tasks[0] += 1
+                            if state_data[0] == labels:
+                                completed_tasks[1] += 1
+                            print('Task: ', state_data[1], ' complete on offloaded')
 
                 if recived == 7 and is_set:
                     heart_check = protocol.heartbeat(7, sp_addr_list[protocol_index][0])
@@ -689,7 +695,7 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 
             if recived == 5:
                 data = heartbeat_messages[protocol_index][1]
-                print("sending data??")
+
                 protocol.send_data(data, sp_addr_list[protocol_index][0])
                 
                 threading.Thread(target=send_message_thread, args=(protocol, heartbeat_messages[protocol_index][3], 
@@ -825,8 +831,8 @@ if __name__ == '__main__':
         #Spin up schdeuler thread 
         thread_list.append(threading.Thread(target=scheduler_thread, args=([sp])).start())
 
-        print("Waiting 10 Seconds to allow connections")
-        time.sleep(10)
+        print("Waiting 20 Seconds to allow connections")
+        time.sleep(20)
 
         with torch.no_grad():
             for features, labels in data_loader:
@@ -848,7 +854,7 @@ if __name__ == '__main__':
                 #if there are other nodes in the network and queued tasks decide if newest task should be offloaded
                 if len(sp_addr_list) > 0 and len(raw_img_tasks) > 0:
                     #estimate time need to run the personal resource including current execution
-                    personal_time_est = (task_num - last_personal_task_process - 1)*avg_model_exc_time
+                    personal_time_est = (len(raw_img_tasks) - last_personal_task_process - 1)*avg_model_exc_time
                     personal_time_est += (avg_model_exc_time - (time.time() - personal_task_start_time)) 
                     
                     #get calulated single task estimates
@@ -857,9 +863,9 @@ if __name__ == '__main__':
 
                     #depending on load of the system add additional delay(may need to remove /2 for avg_offload_factors)
                     if current_num_tasks_offloaded >= 3 and network_config == 0:
-                        offload_time_est += (current_num_tasks_offloaded - 2) * (avg_offload_factors[network_config]/2)
+                        offload_time_est += (current_num_tasks_offloaded - 2) * (avg_offload_factors[network_config])
                     elif current_num_tasks_offloaded >= 6 and network_config > 0:
-                        offload_time_est += (current_num_tasks_offloaded - 5) * (avg_offload_factors[network_config]/2)
+                        offload_time_est += (current_num_tasks_offloaded - 5) * (avg_offload_factors[network_config])
                     
                     #if offload estimate is less that personal execution estimate offload task
                     if offload_time_est <= personal_time_est:
@@ -900,6 +906,8 @@ if __name__ == '__main__':
         master_ip = sys.argv[2][2:]
         master_port = int(sys.argv[3][2:])
 
+        #self_ip = sys.argv[4][2:]
+
         cp = ClientProtocol()
         sp = ServerProtocol(is_master)
 
@@ -923,30 +931,30 @@ if __name__ == '__main__':
 
             #loop through resource semaphore to check for tasks
             for index, resource in enumerate(resource_semaphores):
-                print(resource, raw_img_tasks)
-                if resource[0] == 1 and resource[1] == 0 and len(raw_img_tasks) > 0:
+                if resource[0] == 3 and resource[1] == 0 and len(split3_tasks) > 0:
                     resource_semaphores[index][1] = 1
                     #try to send updated state to master
                     heartbeat_semaphores[1] = 1
-
-                    task = raw_img_tasks.pop(0)
+                    task = split3_tasks.pop(0)
+                    print("processing on split-3: ", task[0].shape)
                     threading.Thread(target=personal_execution_thread, args=(task[0], task[1], task[2], index, resource[0])).start()
-
+                
                 elif resource[0] == 2 and resource[1] == 0 and len(split2_tasks) > 0: 
                     resource_semaphores[index][1] = 1
                     #try to send updated state to master
                     heartbeat_semaphores[1] = 1
-
                     task = split2_tasks.pop(0)
+                    print("processing on split-2: ", task[0].shape)
                     threading.Thread(target=personal_execution_thread, args=(task[0], task[1], task[2], index, resource[0])).start()
 
-                elif resource[0] == 3 and resource[1] == 0 and len(split3_tasks) > 0:
+                elif resource[0] == 1 and resource[1] == 0 and len(raw_img_tasks) > 0:
                     resource_semaphores[index][1] = 1
                     #try to send updated state to master
                     heartbeat_semaphores[1] = 1
-
-                    task = split3_tasks.pop(0)
+                    task = raw_img_tasks.pop(0)
+                    print("processing on split-1: ", task[0].shape)
                     threading.Thread(target=personal_execution_thread, args=(task[0], task[1], task[2], index, resource[0])).start()
+                
             
             #small delay to prevent over consumption of machines resources
             time.sleep(0.0001)
@@ -954,5 +962,3 @@ if __name__ == '__main__':
         for thread in thread_list:
             if thread != None:
                 thread.join()
-        
-        
