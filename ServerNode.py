@@ -53,9 +53,6 @@ class ServerProtocol:
             else:
                 print('Message recived not client handshake')
 
-            if self.is_master:
-                break
-
         self.mutex_flag = 0
 
         #for task handling purposes return the new addresses together 

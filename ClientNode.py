@@ -8,7 +8,7 @@ import time
 
 class ClientProtocol:
 
-    def __init__(self, number_of_sockets):
+    def __init__(self):
         #for each server connection we will define a client socket
         self.sockets = []
         self.sockets_data = []
@@ -20,12 +20,12 @@ class ClientProtocol:
     def connect(self, server_ip, server_port=5555):
         while self.mutex_flag != 0:
             time.sleep(0.001)
-        
+
         self.mutex_flag = 1
         self.sockets.append(socket(AF_INET, SOCK_STREAM))
         self.sockets[len(self.sockets)-1].connect((server_ip, server_port))
         self.sockets_data.append('')
-        self.mutex_flat = 0
+        self.mutex_flag = 0
 
         return len(self.sockets) - 1
 
