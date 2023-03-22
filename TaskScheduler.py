@@ -62,6 +62,12 @@ completed_tasks = [0,0] #currently (# of tasks complete, # of tasks correct [top
 #list of models splits for the node, will contain 1 for master and 3 for worker nodes
 resources = []
 resource_semaphores = []
+
+#this is for nodes context switching
+splits = [1,2,3]
+context_switch_semaphore = 0
+
+#these are recorded average times for decision making and time "cushion" factors
 #min_model_exc_time = 0.82
 avg_model_exc_time = 1.08
 avg_batch_model_offload_time = [2.16, 2.30, 1.87] #from calculations using recorded data - batch of [3,6,6]
@@ -87,12 +93,12 @@ def server_connection_thread(sp):
             num_of_nodes = len(sp_addr_list)
             if num_of_nodes == 1 or num_of_nodes == 3:
                 #default split (1,2,3) || tri-split (1,2,3) - (1,2,2) - (2,2,3)
-                node_resource_semaphores.append([(1,0),(2,0),(3,0)])
+                node_resource_semaphores.append([[1,0],[2,0],[3,0]])
                 pass
             elif num_of_nodes == 2:
                 #2 node split (1,2,2) - (2,2,3)
                 #TODO: call a context switch of node 1
-                node_resource_semaphores.append([(2,0),(2,0),(3,0)])
+                node_resource_semaphores.append([[2,0],[2,0],[3,0]])
                 pass 
 
     #currently only master node cares about external node resource states
@@ -245,40 +251,49 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 
     global resources_semaphores
     global node_channel_semaphores
+    global node_resource_semaphores
 
     global ready_node_connection_list
+    global splits
+    global context_switch_semaphore
 
     global split2_tasks
     global split3_tasks
     global return_tasks 
-    
+
     #master to node
     # 0 basic connection do nothing
     # 1 master will be sending data of other nodes for connection to new node, ready any master port
     # 2 master telling node to ready itself for new node connection
-    # 3 master is directing traffic, ready first master port for infromation (data for split 2 and 3)
-    # 4 master will be sending raw image data to node, ready any master port (data for split 1)
+    # 3 master telling node to context switch
+    # 4 master is directing traffic, ready first master port for infromation (data for split 2 and 3)
+    # 5 master will be sending raw image data to node, ready any master port (data for split 1)
     #   1, 3, and 4 will be followed by a connection port(s) in which to send data
     # 255 master is terminating connection (have node kill itself)
 
     #node to master
     # 0 basic connection do nothing
-    # 5 node wants to send completion data to master
-    # 6 node finished a task and wants to send state to master, request for port (output for split 3)
+    # 6 node wants to send completion data to master
+    # 7 node finished a task and wants to send state to master, request for port (output for split 3)
     # 255 confirmation on termination (will kill itself)
 
+    terminate = False
+
+#========================================================== Worker node ===========================================================
+
     if isinstance(protocol, ClientProtocol):
-        while not all_task_completed:
+        while not terminate:
             recived = protocol.heartbeat(heartbeat_messages[0][0], cp_list[protocol_index][0])
             #for 1-4 we will need to send another heartbeat back as confirmation of request
 
-            #network updates
+#----------------------------------------------------------network updates----------------------------------------------------------
             if recived == 1:
                 heart_check = protocol.heartbeat(1, cp_list[protocol_index][0])
                 if heart_check == 1:
+                    #set splits variables
                     protocol.handle_data(cp_list[protocol_index][0])
-
-                    #TODO:recive message to set split contexts (to bypass need to create a function for it)
+                    splits = protocol.sockets_data[protocol_index]
+                    context_switch_semaphore =1 
 
                     #recive list of addrs to connect too
                     protocol.handle_data(cp_list[protocol_index][0])
@@ -293,12 +308,19 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                 if heart_check == 2:
                     #listen for a new connection to be made
                     threading.Thread(target=server_connection_thread, args=(secondary_protocol))
-                
 
-            #intermediate data transfer
             if recived == 3:
                 heart_check = protocol.heartbeat(3, cp_list[protocol_index][0])
                 if heart_check == 3:
+                    #set splits funtion
+                    protocol.handle_data(cp_list[protocol_index][0])
+                    splits = protocol.sockets_data[protocol_index]
+                    context_switch_semaphore =1 
+
+#------------------------------------------------------intermediate data transfer-----------------------------------------------------
+            if recived == 4:
+                heart_check = protocol.heartbeat(4, cp_list[protocol_index][0])
+                if heart_check == 4:
                     #revice state info
                     protocol.handle_data(cp_list[protocol_index][0])
                     data=protocol.sockets_data[protocol_index]
@@ -313,9 +335,9 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                         threading.Thread(target=receive_message_thread, args=(protocol if data[2] == 0 else secondary_protocol, 
                                                                                 data[3][0], data[3][1], data[1]+1))
 
-            if recived == 4:
-                heart_check = protocol.heartbeat(4, cp_list[protocol_index][0])
-                if heart_check == 4:
+            if recived == 5:
+                heart_check = protocol.heartbeat(5, cp_list[protocol_index][0])
+                if heart_check == 5:
                     #recive state info
                     protocol.handel_data(cp_list[protocol_index][0])
                     addr = protocol.sockets_data[protocol_index]
@@ -324,20 +346,20 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                     cp_connection_semaphores[addr[0]][addr[1]] = 1
                     threading.Thread(target=receive_message_thread, args=(protocol, addr[0], addr[1]))
 
-            #output transfer and state updates
-            if recived == 5:
+#--------------------------------------------------output transfer and state updates---------------------------------------------------
+            if recived == 6:
                 #since we will return the argmaxed result message time is negligible
                 return_data = return_tasks.pop(0)
                 protocol.send_data(return_data, cp_list[protocol_index][0])
                 heartbeat_messages[0][0] = 0
 
-            if recived == 6:
+            if recived == 7:
                 #return a state list of resource flags, cp flags (without master), and sp flags
                 protocol.send_data([resources_semaphores, cp_connection_semaphores[1:], sp_connection_semaphores], cp_list[protocol_index][0])
                 heartbeat_messages[0][0] = 0
                 
             if recived == 255:
-                #TODO:die
+                terminate = True
                 heartbeat_messages[0][0] = 0
 
             if recived != 0:
@@ -345,15 +367,22 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 
             time.sleep(0.005)
 
+#========================================================== Master node ===========================================================
     elif isinstance(protocol, ServerProtocol):
         while not all_task_completed:
             recived = protocol.heartbeat(heartbeat_messages[protocol_index][0], sp_addr_list[protocol_index][0])
+
+            if heartbeat_messages[protocol_index][0] == 255:
+                terminate = True
+
+#--------------------------------------------------output transfer and state updates---------------------------------------------------
+
             #we will only care about node requests if master node is at idle with the node
             #we will need to send a heartbeat back as confirmation of request
             if heartbeat_messages[protocol_index][0] == 0:
-                if recived == 5:
-                    heart_check = protocol.heartbeat(5, sp_addr_list[protocol_index][0])
-                    if heart_check == 5:
+                if recived == 6:
+                    heart_check = protocol.heartbeat(6, sp_addr_list[protocol_index][0])
+                    if heart_check == 6:
                         #recive task completion data
                         protocol.handle_data(sp_addr_list[protocol_index][0])
                         idx = protocol.addresses.index(sp_addr_list[protocol_index][0])
@@ -364,9 +393,9 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                         if data == labels:
                             completed_tasks[1] += 1
 
-                if recived == 6:
-                    heart_check = protocol.heartbeat(6, sp_addr_list[protocol_index][0])
-                    if heart_check == 6:
+                if recived == 7:
+                    heart_check = protocol.heartbeat(7, sp_addr_list[protocol_index][0])
+                    if heart_check == 7:
                         #recive state data
                         protocol.handle_data(sp_addr_list[protocol_index][0])
                         idx = protocol.addresses.index(sp_addr_list[protocol_index][0])
@@ -379,32 +408,47 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                         #update channel states
                         node_channel_semaphores[protocol_index] = state_data[1:]
 
-            #network updates
+#----------------------------------------------------------network updates----------------------------------------------------------
             if recived == 1:
                 connection_list = []
+                splits = []
+
+                #collect splits data
+                for split in node_resource_semaphores[protocol_index]:
+                    splits.append(split[0])
+
+                #collect address
                 for i, l in enumerate(sp_addr_list):
                     if i != len(sp_addr_list) - 1:
                         connection_list.append(l[0][0])
                         ready_node_connection_list[i] = 0
                     
-
+                #send split data first then addresses
+                protocol.send_data(splits, sp_addr_list[protocol_index][0])
                 protocol.send_data(connection_list, sp_addr_list[protocol_index][0])
 
-                #TODO:send message to set split contexts of node (to bypass need to create a function for it)
-                
                 heartbeat_messages[protocol_index][0] = 0
 
             if recived == 2:
                 ready_node_connection_list[protocol_index] = 1
                 heartbeat_messages[protocol_index][0] = 0
 
-            #intermediate data transfer
             if recived == 3:
+                splits = []
+                #collect splits data
+                for split in node_resource_semaphores[protocol_index]:
+                    splits.append(split[0])
+
+                #send split data
+                protocol.send_data(splits, sp_addr_list[protocol_index][0])
+
+#------------------------------------------------------intermediate data transfer-----------------------------------------------------
+            if recived == 4:
                 data = heartbeat_messages[protocol_index][1:]
                 protocol.send_data(data, sp_addr_list[protocol_index][0])
                 heartbeat_messages[protocol_index] = [0,0,0,0,0]
 
-            if recived == 4:
+            if recived == 5:
                 data = heartbeat_messages[protocol_index][1]
                 protocol.send_data(data, sp_addr_list[protocol_index][0])
                 
