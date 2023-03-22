@@ -44,17 +44,12 @@ sp_connection_semaphores = []
 heartbeat_messages = [[0,0,0,0,0]] 
 heartbeat_semaphores = [0,0] #these are for worker nodes, if set they want to hearbeat either 6 or 7 respectively 
 
-#TODO:will explain this later
-ready_node_connection_list = []
-
 #only for master node will be a list of lists of #[is_running, model_split] for each node in network
 node_resource_semaphores = [] 
 #as above only for master node will be a list of lists of #[connecting_node, protocol_type, is_open], ...]
 node_channel_semaphores = []
 
 #lists containing the data inputs for the model
-#TODO: change lists to priority queues for time squental processing 
-
 tasks_to_offload = []
 raw_img_tasks = []
 
@@ -93,15 +88,21 @@ def server_connection_thread(sp):
     global node_resource_semaphores
     global heartbeat_messages
 
+    global split2_tasks
+    global split3_tasks
+
     heartbeat_threads = []
 
     #TODO: add flag so we do not append more node resouces while scheduler is searching for nodes
-    #TODO: append a (0,0) to ready_node_connection_list
     if is_master:
         while len(sp_addr_list) < 3: #hardcoding for 3 nodes
             ret_list = sp.server_handshake()
+
+            #append basic lists
             sp_addr_list.append(ret_list)
             sp_connection_semaphores.append([0,0,0,0])
+            split2_tasks.append(0)
+            split3_tasks.append(0)
 
             #ready old nodes for new node connection
             if len(heartbeat_messages) > 0:
@@ -152,6 +153,7 @@ def server_connection_thread(sp):
 def client_connection_thread(cp, addr, port, is_first_connection, sp=None):
     global cp_list
     global cp_connection_semaphores
+    global heartbeat_semaphores
 
     iter_var = 4 if is_first_connection else 3
     cp_append_list = []
@@ -170,16 +172,21 @@ def client_connection_thread(cp, addr, port, is_first_connection, sp=None):
         new_thread = threading.Thread(target=heartbeat_thread, args=(cp, len(cp_list)-1), sp)
         new_thread.join()
 
+    #try to send updated state to master
+    heartbeat_semaphores[1] = 1
+
+
 '''
-                               -------------------------------------------------
--------------------------------| model creation and execution thread functions |-------------------------------
-                               -------------------------------------------------
+                               ------------------------------------------------
+-------------------------------| model creation and execution thread function |--------------------------------
+                               ------------------------------------------------
 '''
 
 #takes a list of splits as [1,2,3] or [2,2,3]
 def set_model_splits(splits):
     global resources
     global resource_semaphores
+    global heartbeat_semaphores
 
     processes_empty = False:
 
@@ -208,14 +215,19 @@ def set_model_splits(splits):
             last_layer = torch.nn.Sequential(*list(model.children())[9:])
             resources.append([sub_model, last_layer])
 
-        resource_semaphores.append([split, 0])
+        if len(resource_semaphores) < 3:
+            resource_semaphores.append([split, 0])
+
+    #try to send updated state to master
+    heartbeat_semaphores[1] = 1
 
 
 #personal nodes resource will be element 0 in resources
 #model split = 0 if full model, = 1 for split 1, = 2 for split 2, and so on
-def personal_execution_thread(features, labels, resources_index, model_split=0):
+def personal_execution_thread(features, labels, task_num, resources_index=0, model_split=0):
     global resources
     global resources_semaphores
+    global heartbeat_semaphores
     global completed_tasks
     global is_master
 
@@ -223,7 +235,7 @@ def personal_execution_thread(features, labels, resources_index, model_split=0):
     global split3_tasks
     global return_tasks
 
-    if model_split == 3:
+    if model_split != 3:
         output = resources[resources_index](features) 
     else:
         output = resources[resources_index][0](features)
@@ -234,16 +246,20 @@ def personal_execution_thread(features, labels, resources_index, model_split=0):
         if (torch.argmax(output, axis=1)==labels):
             completed_tasks[1] += 1
         completed_tasks[0] += 1
+        print('Task: ', task_num, ' complete on personal exec')
     else:
         if model_split == 1:
-            split2_tasks.append(output)
+            split2_tasks.append([output, labels, task_num])
         elif model_split == 2:
-            split3_tasks.append(output)
+            split3_tasks.append([output, labels, task_num])
         elif model_split == 3:
             output = torch.argmax(output, axis=1)
-            return_tasks.append(output)
+            return_tasks.append([output, task_num])
     
     resources_semaphores[resources_index] = 0
+
+    #try to send updated state to master
+    heartbeat_semaphores[1] = 1
 
 '''
                                            -----------------------------
@@ -255,6 +271,7 @@ def personal_execution_thread(features, labels, resources_index, model_split=0):
 def scheduler_thread(sp):
     global all_task_completed
     global node_resource_semaphores
+    global node_channel_semaphores
     global sp_addr_list
     global sp_connection_semaphores
     global heartbeat_messages
@@ -266,54 +283,123 @@ def scheduler_thread(sp):
     #main scheduler loop
     while not all_task_completed:
         
-        #if  we have tasks waiting to be offloaded check through node resources
-        for index, node in enumerate(node_resource_semaphores):
-            for slot in node:
-                #check if avaible resource for raw image
-                if len(tasks_to_offload) > 0 and slot[0] == 1:
-                    #check channel states for this node
-                    channel_is_available = False
-                    channel_save_index = 1
-                    for i, flag in enumerate(sp_connection_semaphores[index]):
-                        if flag == 0 and i != 0 and not channel_is_available:
-                            sp_connection_semaphores[index][i] = 1
-                            channel_is_available = True
-                            channel_save_index = i
+        if len(node_resource_semaphores) > 0:
+            #if  we have tasks waiting to be offloaded check through node resources
+            for index, node in enumerate(node_resource_semaphores):
+                for slot in node:
+                    #check if avaible resource for raw image
+                    if len(tasks_to_offload) > 0 and slot[0] == 1:
+                        #check channel states for this node
+                        channel_is_available = False
+                        channel_save_index = 1
+                        for i, flag in enumerate(sp_connection_semaphores[index]):
+                            if flag == 0 and i != 0 and not channel_is_available:
+                                sp_connection_semaphores[index][i] = 1
+                                channel_is_available = True
+                                channel_save_index = i
 
-                    id channel_is_available:
-                        task = tasks_to_offload.pop(0)
-                        message = [5,[0,channel_save_index], [index, channel_save_index], task, 0]
-                        while heartbeat_messages[index][0] != 0:
-                            time.sleep(0.001)
-                        heartbeat_messages[index] = message
-                
-                #check if avaible resouce for second split tasks
-                if slot[0] == 2 and slot[1] == 0:
-                    for elm in split2_tasks:
-                        if elm[1] >= 0:
-                            elm[1] -= 1
-                            #if elm[0] == index:
-                                #TODO: send message to node to route data to its own slot
-                           # else:
-                                #TODO:send message to node to send data to elm[0] node
-                                #TODO:Tell elm[0] node to listen and recive data coming from node for slot
+                        id channel_is_available:
+                            task = tasks_to_offload.pop(0)
+                            message = [5,[0,channel_save_index], [index, channel_save_index], task, 0]
+                            while heartbeat_messages[index][0] != 0:
+                                time.sleep(0.001)
+                            heartbeat_messages[index] = message
+                    
+                    #check if avaible resouce for second split tasks
+                    if slot[0] == 2 and len(node_resource_semaphores) >= 2:
+                        sent_one_channel = False
+                        cp_or_sp = 0
+                        cp_or_sp_index = 0
+                        channel_save_index = 1
+                        receiver_index = 0
+                        for i, tasks in enumerate(split2_tasks)
+                            if tasks < split2_tasks[index] and i != index and not sent_one_channel:
+                                #for now i need to hardcode for 3 nodes
+                                channel = None
+                                receiver_index = i
+                                if index == 0:
+                                    channel = node_channel_semaphores[index][1][i-1]
+                                    cp_or_sp = 1
+                                    cp_or_sp_index = i-1
+                                elif index == 1:
+                                    cp_or_sp_index = 0
+                                    if i < 1:
+                                        channel = node_channel_semaphores[index][0][0]
+                                        cp_or_sp = 0
+                                    else:
+                                        channel = node_channel_semaphores[index][1][0]
+                                        cp_or_sp = 1
+                                elif index == 2:
+                                    channel = node_channel_semaphores[index][0][i]
+                                    cp_or_sp = 0
+                                    cp_or_sp_index = i
 
-                #check if avaible resource for third split tasks
-                if slot[0] == 3 and slot[1] == 0:
-                    for elm in split3_tasks:
-                        if elm[1] >= 0:
-                            elm[1] -= 1
-                            #if elm[0] == index:
-                                #TODO: send message to node to route data to its own slot
-                           # else:
-                                #TODO:send message to node to send data to elm[0] node
-                                #TODO:Tell elm[0] node to listen and recive data coming from node for slot
+                                for i, chan in enumerate(channel):
+                                    if chan == 0 and not sent_one_channel:
+                                        channel_save_index = i
+                                        sent_one_channel = True
 
-        #check for outputs waiting on return
-        for elm in return_tasks:
-            if elm[1] >= 0:
-                elm[1] -= 1
-                #TODO: request message from node to route result data back to master
+                        if set_one_channel:
+                            if index == 0:
+                                receiver = 0
+                            elif index == 1:
+                                receiver = 0 if receiver_index == 0 else 1
+                            elif index == 2:
+                                receiver = 1
+
+                            message = [4, 1, 0, (1 if cp_or_sp == 0 else 0), (receiver, channel_save_index)]
+                            while heartbeat_messages[receiver_index][0] != 0:
+                                time.sleep(0.001)
+                            heartbeat_messages[receiver_index] = message
+
+                            message = [4, 0, 0, cp_or_sp, (cp_or_sp_index, channel_save_index)]
+                            while heartbeat_messages[index][0] != 0:
+                                time.sleep(0.001)
+                            heartbeat_messages[index] = message
+
+                    #check if avaible resource for third split tasks
+                    if slot[0] == 3 and len(node_resource_semaphores) > 2:
+                        #hard coding for 3 nodes ONLY (see above server function for reasoning)
+
+                        channel_save_index = 0
+                        sent_one_channel = False
+
+                        if index == 0 and split3_tasks[index] > split3_tasks[2]
+
+                            for i, chan in enumerate(node_channel_semaphores[index][1][1]):
+                                if chan == 0 and not sent_one_channel:
+                                    channel_save_index = i
+                                    sent_one_channel = True
+
+                            if sent_one_channel:
+                                message = [4, 1, 1, 0, (0, channel_save_index)]
+                                while heartbeat_messages[2][0] != 0:
+                                    time.sleep(0.001)
+                                heartbeat_messages[2] = message
+
+                                message = [4, 0, 1, 1, (1, channel_save_index)]
+                                while heartbeat_messages[index][0] != 0:
+                                    time.sleep(0.001)
+                                heartbeat_messages[index] = message
+
+                        elif index == 2 and split3_tasks[index] > split3_tasks[0]
+
+                            for i, chan in enumerate(node_channel_semaphores[index][0][0]):
+                                if chan == 0 and not sent_one_channel:
+                                    channel_save_index = i
+                                    sent_one_channel = True
+
+                            if sent_one_channel:
+                                message = [4, 1, 1, 1, (1, channel_save_index)]
+                                while heartbeat_messages[0][0] != 0:
+                                    time.sleep(0.001)
+                                heartbeat_messages[0] = message
+
+                                message = [4, 0, 1, 0, (0, channel_save_index)]
+                                while heartbeat_messages[index][0] != 0:
+                                    time.sleep(0.001)
+                                heartbeat_messages[index] = message
+
 
         time.sleep(0.01)
 
@@ -339,7 +425,6 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
     global node_channel_semaphores
     global node_resource_semaphores
 
-    global ready_node_connection_list
     global splits
     global context_switch_semaphore
 
@@ -388,6 +473,10 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                     #connect to them
                     for addr in addrs:
                         threading.Thread(target=client_connection_thread, args=(protocol, addr[0], 5555, False))
+                        time.sleep(0.01)
+
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
 
             if recived == 2:
                 heart_check = protocol.heartbeat(2, cp_list[protocol_index][0])
@@ -395,13 +484,19 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                     #listen for a new connection to be made
                     threading.Thread(target=server_connection_thread, args=(secondary_protocol))
 
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
+
             if recived == 3:
                 heart_check = protocol.heartbeat(3, cp_list[protocol_index][0])
                 if heart_check == 3:
                     #set splits funtion
                     protocol.handle_data(cp_list[protocol_index][0])
                     splits = protocol.sockets_data[protocol_index]
-                    context_switch_semaphore =1 
+                    context_switch_semaphore =1
+
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1 
 
 #------------------------------------------------------intermediate data transfer-----------------------------------------------------
             if recived == 4:
@@ -413,13 +508,16 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
 
                     #sending
                     if data[0] == 0: 
-                        data_to_send = split1_tasks.pop(0) if data[1] == 0 else split2_tasks.pop(0)
+                        data_to_send = split1_tasks.pop() if data[1] == 0 else split2_tasks.pop()
                         threading.Thread(target=send_message_thread, args=(protocol if data[2] == 0 else secondary_protocol, 
                                                                                 data_to_send, data[3][0], data[3][1]))
                     #reciving
                     elif data[0] == 1: 
                         threading.Thread(target=receive_message_thread, args=(protocol if data[2] == 0 else secondary_protocol, 
                                                                                 data[3][0], data[3][1], data[1]+1))
+
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
 
             if recived == 5:
                 heart_check = protocol.heartbeat(5, cp_list[protocol_index][0])
@@ -431,18 +529,32 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                     #recv raw_image
                     cp_connection_semaphores[addr[0]][addr[1]] = 1
                     threading.Thread(target=receive_message_thread, args=(protocol, addr[0], addr[1]))
+                
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
 
 #--------------------------------------------------output transfer and state updates---------------------------------------------------
             if recived == 6:
                 #since we will return the argmaxed result message time is negligible
                 return_data = return_tasks.pop(0)
+
+                #check if more return data otherwise we can pass idle heartbeat
+                if len(return_data) == 0:
+                    heartbeat_semaphores[0] == 0
+
                 protocol.send_data(return_data, cp_list[protocol_index][0])
                 heartbeat_messages[0][0] = 0
 
             if recived == 7:
-                #return a state list of resource flags, cp flags (without master), and sp flags
-                protocol.send_data([resources_semaphores, cp_connection_semaphores[1:], sp_connection_semaphores], cp_list[protocol_index][0])
+                #return a state list of resource flags, cp flags (without master), and sp flags, and task queue lengths
+
+                tasks2 = len(split2_tasks)
+                tasks3 = len(split3_tasks)
+                data = [resources_semaphores, cp_connection_semaphores[1:], sp_connection_semaphores, tasks2, tasks3]
+
+                protocol.send_data(data, cp_list[protocol_index][0])
                 heartbeat_messages[0][0] = 0
+                heartbeat_semaphores[1] = 0
                 
             if recived == 255:
                 terminate = True
@@ -480,6 +592,7 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                         completed_tasks[0] += 1
                         if data == labels:
                             completed_tasks[1] += 1
+                        print('Task: ', task_num, ' complete on offloaded')
 
                 if recived == 7:
                     heart_check = protocol.heartbeat(7, sp_addr_list[protocol_index][0])
@@ -494,7 +607,11 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                             node_resource_semaphores[protocol_index][i] = data
 
                         #update channel states
-                        node_channel_semaphores[protocol_index] = state_data[1:]
+                        node_channel_semaphores[protocol_index] = state_data[1:3]
+
+                        #update recoreded node queues
+                        split2_tasks[protocol_index] = state_data[3]
+                        split3_tasks[protocol_index] = state_data[4]
 
 #----------------------------------------------------------network updates----------------------------------------------------------
             if recived == 1:
@@ -509,8 +626,12 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                 for i, l in enumerate(sp_addr_list):
                     if i != len(sp_addr_list) - 1:
                         connection_list.append(l[0][0])
-                        ready_node_connection_list[i] = 0
+                        while heartbeat_message[i] != 0:
+                            time.sleep(0.001)
+                        heartbeat_message[i] = 2
                     
+                time.sleep(0.01) #wait 10ms for nodes to ready themselves
+
                 #send split data first then addresses
                 protocol.send_data(splits, sp_addr_list[protocol_index][0])
                 protocol.send_data(connection_list, sp_addr_list[protocol_index][0])
@@ -518,7 +639,6 @@ def heartbeat_thread(protocol, protocol_index, secondary_protocol=None):
                 heartbeat_messages[protocol_index][0] = 0
 
             if recived == 2:
-                ready_node_connection_list[protocol_index] = 1
                 heartbeat_messages[protocol_index][0] = 0
 
             if recived == 3:
@@ -560,6 +680,7 @@ def send_message_thread(protocol, data, protocol_index, channel_selection=0):
     global cp_connection_semaphores
     global sp_addr_list
     global sp_connection_semaphores
+    global is_master
 
     if isinstance(protocol, ClientProtocol):
         protocol.send_data(data, cp_list[protocol_index][channel_selection])
@@ -573,7 +694,9 @@ def send_message_thread(protocol, data, protocol_index, channel_selection=0):
         #this should be set to 1 before calling this thread function
         sp_connection_semaphores[protocol_index][channel_selection] = 0
 
-    #TODO:if not is master update heartbeat message to update state
+    if not is_master:
+        #try to send updated state to master
+        heartbeat_semaphores[1] = 1
 
 #this is only for receiving data over channel  
 def receive_message_thread(protocol, protocol_index, channel_selection=0, data_type=0):
@@ -581,6 +704,7 @@ def receive_message_thread(protocol, protocol_index, channel_selection=0, data_t
     global cp_connection_semaphores
     global sp_addr_list
     global sp_connection_semaphores
+    global is_master
     
     global raw_img_tasks 
     global split2_tasks 
@@ -618,7 +742,9 @@ def receive_message_thread(protocol, protocol_index, channel_selection=0, data_t
         #this should be set to 1 before calling this thread function
         sp_connection_semaphores[protocol_index][channel_selection] = 0
 
-    #TODO:if not is master update heartbeat message to update state
+    if not is_master:
+        #try to send updated state to master
+        heartbeat_semaphores[1] = 1
 
 '''
                                                     ----------------
@@ -630,17 +756,18 @@ if __name__ == '__main__':
 
 #========================================================== Master node ===========================================================
 
-    #TODO: refactor to have master ip as input of sys.argv[2], and port as sys.argv[3]
     if sys.argv[1] == '--master': 
         print('starts as master')
 
         #set inital variables
         is_master = True
         thread_list = []
+        master_ip = sys.argv[2][2:]
+        master_port = sys.argv[3][2:]
 
         #spin up server protocol
         sp = ServerProtocol()
-        sp.listen('127.0.0.1', 5555)
+        sp.listen(master_ip, master_port)
         thread_list.append(threading.Thread(target=server_connection_thread, args=(sp)))
 
         #set resources/load model and dataset
@@ -664,14 +791,14 @@ if __name__ == '__main__':
         current_num_tasks_offloaded = 0
 
         #Spin up schdeuler thread 
-        thread_list.append(threading.Thread(target=scheduler_thread, args=()))
+        thread_list.append(threading.Thread(target=scheduler_thread, args=(sp)))
 
         with torch.no_grad():
             for features, labels in data_loader:
                 frame_capture_start = time.time()
 
                 task_num += 1
-                raw_img_tasks.append((task_num, features, labels))
+                raw_img_tasks.append([features, labels, task_num])
 
                 #if personal resource is avaible send oldest frame saved to personal resource 
                 if resource_semaphores[0] == 0:  
@@ -679,8 +806,7 @@ if __name__ == '__main__':
                     personal_task_processing_number = task[0]
 
                     personal_task_start_time = time.time()
-                    #TODO:Edit this for new personal exc funtionality
-                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2]))
+                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2], task[3]))
 
                     resource_semaphores[0] = 1
 
@@ -712,29 +838,71 @@ if __name__ == '__main__':
                 if frame_rate > time.time() - frame_capture_start:
                     time.sleep(frame_rate - (time.time() - frame_capture_start))
 
-            #TODO:Join task Threads
-            #all_task_completed = True
+        for thread in thread_list:
+            thread.join()
+        
+        all_task_completed = True
 
 #========================================================== Worker node ===========================================================
 
     else:
         print('starts as worker')
-
-        #set inital variables
-        #TODO: cp_list will store connections in for of (ip, port) -- refactor to commandline args for master node
-        #cp_list.append((sys.argv[2]), int(sys.argv[3]))
-        cp_list.append(('127.0.0.1', 5555))
+        
         thread_list = []
+        master_ip = sys.argv[2][2:]
+        master_port = sys.argv[3][2:]
 
         cp = ClientProtocol()
+        sp = ServerProtocol()
 
-        for i in range(4):
-            cp.connect('127.0.0.1', 5555)
-            cp.client_handshake(i)
+        sp.listen(master_ip, master_port)
 
-        #get initial message from master node
-        #if first node server protocol not needed else create server protocol
+        #begin connection
+        thread_list.append(threading.Thread(target=client_connection_thread, args=(cp, master_ip, master_port, True, sp)))
+
+        #wait for connections and threads to set then establish splits
+        time.sleep(3)
+        set_model_splits(splits)
+
+        #wait until resources are set (can possibly remove this but just to be safe for now)
+        while len(resources) < 3:
+            time.sleep(0.01) 
+
+        while not all_task_completed:
+            #if a context switch need to be preformed do that by call set_model_splits again
+            if context_switch_semaphore == 1
+                set_model_splits(splits)
+
+            #loop through resource semaphore to check for tasks
+            for index, resource in enumerate(resource_semaphores):
+                if resource[0] == 1 and resource[1] == 0 and len(raw_img_tasks) > 0:
+                    resource_semaphores[index][1] = 1
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
+
+                    task = raw_img_tasks.pop(0)
+                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2], task[3], index, resrouce[0]))
+
+                elif resource[0] == 2 and resource[1] == 0 and len(split2_tasks) > 0: 
+                    resource_semaphores[index][1] = 1
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
+
+                    task = split2_tasks.pop(0)
+                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2], task[3], index, resrouce[0]))
+
+                elif resource[0] == 3 and resource[1] == 0 and len(split3_tasks) > 0:
+                    resource_semaphores[index][1] = 1
+                    #try to send updated state to master
+                    heartbeat_semaphores[1] = 1
+
+                    task = split3_tasks.pop(0)
+                    threading.Thread(target=personal_execution_thread, args=(task[1], task[2], task[3], index, resrouce[0]))
+            
+            #small delay to prevent over consumption of machines resources
+            time.sleep(0.0001)
+
+        for thread in threads:
+            thread.join()
         
-        #once connections are established wait for master to direct resource slots
-        #simply loop heartbeat and functionality threads until termination heartbeat is sent by master 
         
